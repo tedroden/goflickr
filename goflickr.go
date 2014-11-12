@@ -1,4 +1,4 @@
-package flickr
+package goflickr
 
 import (
 	"bytes"
@@ -17,6 +17,7 @@ const (
 	endpoint        = "https://api.flickr.com/services/rest/?"
 	uploadEndpoint  = "https://api.flickr.com/services/upload/"
 	replaceEndpoint = "https://api.flickr.com/services/replace/"
+	authEndpoint    = "https://www.flickr.com/services/auth/?"
 	apiHost         = "api.flickr.com"
 )
 
@@ -35,6 +36,18 @@ type Response struct {
 type ResponseError struct {
 	Code    string `xml:"code,attr"`
 	Message string `xml:"msg,attr"`
+}
+
+type Frob struct {
+	Payload string `xml:"frob"`
+}
+
+type AuthUser struct {
+	Fullname string `xml:">fullname,attr"`
+}
+type Auth struct {
+	Token string `xml:"auth>token"`
+	AuthUser AuthUser `xml:"user"`
 }
 
 type nopCloser struct {
@@ -68,6 +81,7 @@ func (request *Request) Sign(secret string) {
 	}
 	sort.Strings(sorted_keys)
 
+	
 	// Build out ordered key-value string prefixed by secret
 	s := secret
 	for _, key := range sorted_keys {
@@ -90,19 +104,20 @@ func (request *Request) Sign(secret string) {
 	args["api_sig"] = fmt.Sprintf("%x", hash.Sum(nil))
 }
 
+
+
 func (request *Request) URL() string {
 	args := request.Args
-
 	args["api_key"] = request.ApiKey
 	args["method"] = request.Method
-
-	s := endpoint + encodeQuery(args)
-	return s
+	return endpoint + encodeQuery(args)
 }
 
-func (request *Request) Execute() (response string, ret error) {
+
+
+func (request *Request) Execute() (response []byte, ret error) {
 	if request.ApiKey == "" || request.Method == "" {
-		return "", Error("Need both API key and method")
+		return []byte(nil), Error("Need both API key and method")
 	}
 
 	s := request.URL()
@@ -110,11 +125,11 @@ func (request *Request) Execute() (response string, ret error) {
 	res, err := http.Get(s)
 	defer res.Body.Close()
 	if err != nil {
-		return "", err
+		return []byte(nil), err
 	}
 
 	body, _ := ioutil.ReadAll(res.Body)
-	return string(body), nil
+	return body, nil
 }
 
 func encodeQuery(args map[string]string) string {
@@ -202,6 +217,18 @@ func (request *Request) Upload(filename string, filetype string) (response *Resp
 	return sendPost(postRequest)
 }
 
+func (request *Request) AuthUrl(secret string, frob string, perms string) (url string) {
+	args := request.Args
+	args["frob"] = frob
+	args["perms"] = perms
+	args["api_key"] = request.ApiKey
+	request.Sign(secret)
+	s := fmt.Sprintf("%s&api_key=%s", authEndpoint + encodeQuery(args), request.ApiKey)
+	return s
+
+}
+
+
 func (request *Request) Replace(filename string, filetype string) (response *Response, err error) {
 	postRequest, err := request.buildPost(replaceEndpoint, filename, filetype)
 	if err != nil {
@@ -209,6 +236,7 @@ func (request *Request) Replace(filename string, filetype string) (response *Res
 	}
 	return sendPost(postRequest)
 }
+
 
 func sendPost(postRequest *http.Request) (response *Response, err error) {
 	// Create and use TCP connection (lifted mostly wholesale from http.send)

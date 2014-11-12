@@ -1,4 +1,4 @@
-package flickr
+package goflickr
 
 import (
 	"fmt"
