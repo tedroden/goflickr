@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strings"
 )
 
 const (
@@ -25,9 +26,29 @@ const (
 type Request struct {
 	ApiKey string
 	ApiSecret string
+	AuthToken string	
 	Method string
 	Signature string
-	Args   map[string]string
+	args   map[string]string
+}
+
+
+type AuthUser struct {
+	Fullname string `xml:"fullname,attr"`
+	Nsid string `xml:"nsid,attr"`
+	Username string `xml:"username,attr"`
+}
+type Auth struct {
+	Token string `xml:"auth>token"`
+	User AuthUser `xml:"auth>user"`
+}
+
+type Photoset struct {
+	Id string `xml:"id,attr"`
+}
+
+type UploadPhoto struct {
+	Id string `xml:"photoid"`
 }
 
 type Response struct {
@@ -45,16 +66,6 @@ type Frob struct {
 	Payload string `xml:"frob"`
 }
 
-type AuthUser struct {
-	Fullname string `xml:"fullname,attr"`
-	Nsid string `xml:"nsid,attr"`
-	Username string `xml:"username,attr"`
-}
-type Auth struct {
-	Token string `xml:"auth>token"`
-	User AuthUser `xml:"auth>user"`
-}
-
 
 type nopCloser struct {
 	io.Reader
@@ -68,6 +79,22 @@ func (e Error) Error() string {
 	return string(e)
 }
 
+
+func (request *Request) PhotosetCreate(title string, photo_id string) Photoset {
+	request.Method = "flickr.photosets.create"
+	request.args = map[string]string{
+		"title": title,
+		"primary_photo_id": photo_id,
+	}
+	s, _ := request.doPost(endpoint)
+	var upload Photoset
+	err := xml.Unmarshal(*s, &upload)
+	if err != nil {
+		fmt.Printf("ERROR! %s\n", err)
+	}
+	return upload	
+}
+
 func (request *Request) GetFrob() Frob {
 	request.Method = "flickr.auth.getFrob"
 	s, _ := request.doGet(endpoint)
@@ -78,8 +105,9 @@ func (request *Request) GetFrob() Frob {
 
 func (request *Request) GetToken(frob Frob) Auth {
 	request.Method = "flickr.auth.getToken"
-	request.Args = request.getArgsPlusN(1)
-	request.Args["frob"] = frob.Payload
+	request.args = map[string]string{
+		"frob": frob.Payload,
+	}
 	s, _ := request.doGet(endpoint)
 	var a Auth
 	xml.Unmarshal(s, &a)
@@ -155,6 +183,30 @@ func (request *Request) doGet(earl string) (response []byte, ret error) {
 }
 
 
+func (request *Request) doPost(url_ string) (response *[]byte, err error) {
+
+	
+	request.args["api_key"] = request.ApiKey
+	request.args["method"] = request.Method
+	request.args["auth_token"] = request.AuthToken
+	request.args["api_sig"] = request.GetSig()
+	fmt.Println(request.args)
+	body := encodeQuery(request.args)
+	
+	req, err := http.NewRequest("POST", url_, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Println(err)
+	}
+	defer resp.Body.Close()
+	
+	response_body, err := ioutil.ReadAll(resp.Body)
+	fmt.Println(string(response_body))
+	return &response_body, err
+
+}
 
 
 func encodeQuery(args map[string]string) string {
@@ -184,19 +236,19 @@ func (request *Request) buildPost(url_ string, filename string, filetype string)
 	}
 	f_size := stat.Size()
 
-	request.Args["api_key"] = request.ApiKey
+	request.args["api_key"] = request.ApiKey
 
 	boundary, end := "----###---###--flickr-go-rules", "\r\n"
 
 	// Build out all of POST body sans file
 	header := bytes.NewBuffer(nil)
-	for k, v := range request.Args {
+	for k, v := range request.args {
 		header.WriteString("--" + boundary + end)
 		header.WriteString("Content-Disposition: form-data; name=\"" + k + "\"" + end + end)
 		header.WriteString(v + end)
 	}
 	header.WriteString("--" + boundary + end)
-	header.WriteString("Content-Disposition: form-data; name=\"photo\"; filename=\"photo.jpg\"" + end)
+	header.WriteString("Content-Disposition: form-data; name=\"photo\"; filename=\"" + filename + "\"" + end)
 	header.WriteString("Content-Type: " + filetype + end + end)
 
 	footer := bytes.NewBufferString(end + "--" + boundary + "--" + end)
@@ -234,47 +286,48 @@ func (request *Request) buildPost(url_ string, filename string, filetype string)
 
 // Example:
 // r.Upload("thumb.jpg", "image/jpeg")
-func (request *Request) Upload(filename string, filetype string, token string) (response *Response, err error) {
-	request.Args = request.getArgsPlusN(5)
+func (request *Request) Upload(filename string, filetype string) (*UploadPhoto, error) {
+	request.args = make(map[string]string, 5)
 	
-	request.Args["is_public"] = "0"
-	request.Args["is_family"] = "0"
-	request.Args["is_friend"] = "0"
-	request.Args["auth_token"] = token
-	request.Args["api_sig"] = request.GetSig()
+	request.args["is_public"] = "0"
+	request.args["is_family"] = "0"
+	request.args["is_friend"] = "0"
+	request.args["auth_token"] = request.AuthToken
+	request.args["api_sig"] = request.GetSig()
+	
+
 	postRequest, err := request.buildPost(uploadEndpoint, filename, filetype)
 	if err != nil {
+		fmt.Printf("oops!: %s\n", err)
 		return nil, err
 	}
-	return sendPost(postRequest)
+
+	bytes, err := sendPost(postRequest)
+
+	var upload UploadPhoto
+	err = xml.Unmarshal(*bytes, &upload)
+	return &upload, err
+	
 }
 
 func (request *Request) getArgsPlusN(n int) map[string]string {
-	args := make(map[string]string, len(request.Args) + n)
-	for k, v := range request.Args {
+	args := make(map[string]string, len(request.args) + n)
+	for k, v := range request.args {
 		args[k] = v
 	}	
 	return args
 }
 
 func (request *Request) AuthUrl(frob string, perms string) (url string) {
-	request.Args = request.getArgsPlusN(2)
-	request.Args["frob"] = frob
-	request.Args["perms"] = perms
+	request.args = map[string]string {
+		"frob": frob,
+		"perms": perms,
+	}
 	return request.getURL(authEndpoint)  + "&api_sig=" + request.GetSig()
 }
 
 
-func (request *Request) Replace(filename string, filetype string) (response *Response, err error) {
-	postRequest, err := request.buildPost(replaceEndpoint, filename, filetype)
-	if err != nil {
-		return nil, err
-	}
-	return sendPost(postRequest)
-}
-
-
-func sendPost(postRequest *http.Request) (response *Response, err error) {
+func sendPost(postRequest *http.Request) (response *[]byte, err error) {
 	// Create and use TCP connection (lifted mostly wholesale from http.send)
 	client := &http.DefaultClient
 	resp, err := client.Do(postRequest)
@@ -282,13 +335,9 @@ func sendPost(postRequest *http.Request) (response *Response, err error) {
 	if err != nil {
 		return nil, err
 	}
-	rawBody, _ := ioutil.ReadAll(resp.Body)
+	rawBody, err := ioutil.ReadAll(resp.Body)
 	resp.Body.Close()
-
-	var r Response
-	err = xml.Unmarshal(rawBody, &r)
-
-	return &r, err
+	return &rawBody, err
 }
 
 
