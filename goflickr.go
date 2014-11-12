@@ -1,3 +1,4 @@
+
 package goflickr
 
 import (
@@ -23,7 +24,9 @@ const (
 
 type Request struct {
 	ApiKey string
+	ApiSecret string
 	Method string
+	Signature string
 	Args   map[string]string
 }
 
@@ -43,12 +46,15 @@ type Frob struct {
 }
 
 type AuthUser struct {
-	Fullname string `xml:">fullname,attr"`
+	Fullname string `xml:"fullname,attr"`
+	Nsid string `xml:"nsid,attr"`
+	Username string `xml:"username,attr"`
 }
 type Auth struct {
 	Token string `xml:"auth>token"`
-	AuthUser AuthUser `xml:"user"`
+	User AuthUser `xml:"auth>user"`
 }
+
 
 type nopCloser struct {
 	io.Reader
@@ -60,6 +66,54 @@ type Error string
 
 func (e Error) Error() string {
 	return string(e)
+}
+
+func (request *Request) GetFrob() Frob {
+	request.Method = "flickr.auth.getFrob"
+	s, _ := request.doGet(endpoint)
+	var f Frob
+	xml.Unmarshal(s, &f)
+	return f
+}
+
+func (request *Request) GetToken(frob Frob) Auth {
+	request.Method = "flickr.auth.getToken"
+	request.Args = request.getArgsPlusN(1)
+	request.Args["frob"] = frob.Payload
+	s, _ := request.doGet(endpoint)
+	var a Auth
+	xml.Unmarshal(s, &a)
+	return a
+}
+
+func (request *Request) GetSig() string {
+	args := request.getArgsPlusN(2)
+	args["api_key"] = request.ApiKey
+	if request.Method != "" {
+		args["method"] = request.Method
+	}
+
+	// Sort array keys
+	// fixme: got to bet a better way to sort these.
+	sorted_keys := make([]string, len(args))
+	i := 0
+	for k := range args {
+		sorted_keys[i] = k
+		i++
+	}
+	sort.Strings(sorted_keys)
+	// Build out ordered key-value string prefixed by secret
+	s := request.ApiSecret
+	for _, key := range sorted_keys {
+		if args[key] != "" {
+			s += fmt.Sprintf("%s%s", key, args[key])
+		}
+	}
+	fmt.Println(s)
+	// Have the full string, now hash
+	hash := md5.New()
+	hash.Write([]byte(s))	
+	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
 func (request *Request) Sign(secret string) {
@@ -106,31 +160,73 @@ func (request *Request) Sign(secret string) {
 
 
 
-func (request *Request) URL() string {
-	args := request.Args
+// func (request *Request) URL() string {
+// 	args := request.Args
+// 	args["api_key"] = request.ApiKey
+// 	if request.Method != "" {
+// 		args["method"] = request.Method
+// 	}
+// 	if request.Signature != "" {
+// 		args["api_sig"] = request.Signature
+// 	}
+// 	return endpoint + encodeQuery(args)
+// }
+
+func (request *Request) getURL(url_base string) string {
+	args := request.getArgsPlusN(3)
+
 	args["api_key"] = request.ApiKey
-	args["method"] = request.Method
-	return endpoint + encodeQuery(args)
+	if request.Method != "" {
+		args["method"] = request.Method
+	}
+	if request.Signature != "" {
+		args["api_sig"] = request.Signature
+	}
+	return url_base + encodeQuery(args)
 }
 
 
 
-func (request *Request) Execute() (response []byte, ret error) {
+func (request *Request) doGet(earl string) (response []byte, ret error) {
 	if request.ApiKey == "" || request.Method == "" {
 		return []byte(nil), Error("Need both API key and method")
 	}
 
-	s := request.URL()
+	request.Signature = request.GetSig()
+	
+	s := request.getURL(earl)
 
 	res, err := http.Get(s)
 	defer res.Body.Close()
 	if err != nil {
 		return []byte(nil), err
 	}
-
+	request.Signature = ""
+	request.Method = ""	
 	body, _ := ioutil.ReadAll(res.Body)
 	return body, nil
 }
+
+
+
+// func (request *Request) Execute() (response []byte, ret error) {
+// 	if request.ApiKey == "" || request.Method == "" {
+// 		return []byte(nil), Error("Need both API key and method")
+// 	}
+
+// 	request.Signature = request.GetSig()
+	
+// 	s := request.URL()
+
+// 	res, err := http.Get(s)
+// 	defer res.Body.Close()
+// 	if err != nil {
+// 		return []byte(nil), err
+// 	}
+
+// 	body, _ := ioutil.ReadAll(res.Body)
+// 	return body, nil
+// }
 
 func encodeQuery(args map[string]string) string {
 	i := 0
@@ -209,7 +305,14 @@ func (request *Request) buildPost(url_ string, filename string, filetype string)
 
 // Example:
 // r.Upload("thumb.jpg", "image/jpeg")
-func (request *Request) Upload(filename string, filetype string) (response *Response, err error) {
+func (request *Request) Upload(filename string, filetype string, token string) (response *Response, err error) {
+	request.Args = request.getArgsPlusN(5)
+	
+	request.Args["is_public"] = "0"
+	request.Args["is_family"] = "0"
+	request.Args["is_friend"] = "0"
+	request.Args["auth_token"] = token
+	request.Args["api_sig"] = request.GetSig()
 	postRequest, err := request.buildPost(uploadEndpoint, filename, filetype)
 	if err != nil {
 		return nil, err
@@ -217,15 +320,19 @@ func (request *Request) Upload(filename string, filetype string) (response *Resp
 	return sendPost(postRequest)
 }
 
-func (request *Request) AuthUrl(secret string, frob string, perms string) (url string) {
-	args := request.Args
-	args["frob"] = frob
-	args["perms"] = perms
-	args["api_key"] = request.ApiKey
-	request.Sign(secret)
-	s := fmt.Sprintf("%s&api_key=%s", authEndpoint + encodeQuery(args), request.ApiKey)
-	return s
+func (request *Request) getArgsPlusN(n int) map[string]string {
+	args := make(map[string]string, len(request.Args) + n)
+	for k, v := range request.Args {
+		args[k] = v
+	}	
+	return args
+}
 
+func (request *Request) AuthUrl(frob string, perms string) (url string) {
+	request.Args = request.getArgsPlusN(2)
+	request.Args["frob"] = frob
+	request.Args["perms"] = perms
+	return request.getURL(authEndpoint)  + "&api_sig=" + request.GetSig()
 }
 
 
@@ -254,3 +361,5 @@ func sendPost(postRequest *http.Request) (response *Response, err error) {
 
 	return &r, err
 }
+
+
