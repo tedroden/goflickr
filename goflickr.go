@@ -116,61 +116,8 @@ func (request *Request) GetSig() string {
 	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
-func (request *Request) Sign(secret string) {
-	args := request.Args
-
-	// Remove api_sig
-	delete(args, "api_sig")
-
-	sorted_keys := make([]string, len(args)+2)
-
-	args["api_key"] = request.ApiKey
-	args["method"] = request.Method
-
-	// Sort array keys
-	i := 0
-	for k := range args {
-		sorted_keys[i] = k
-		i++
-	}
-	sort.Strings(sorted_keys)
-
-	
-	// Build out ordered key-value string prefixed by secret
-	s := secret
-	for _, key := range sorted_keys {
-		if args[key] != "" {
-			s += fmt.Sprintf("%s%s", key, args[key])
-		}
-	}
-
-	// Since we're only adding two keys, it's easier
-	// and more space-efficient to just delete them
-	// them copy the whole map
-	delete(args, "api_key")
-	delete(args, "method")
-
-	// Have the full string, now hash
-	hash := md5.New()
-	hash.Write([]byte(s))
-
-	// Add api_sig as one of the args
-	args["api_sig"] = fmt.Sprintf("%x", hash.Sum(nil))
-}
 
 
-
-// func (request *Request) URL() string {
-// 	args := request.Args
-// 	args["api_key"] = request.ApiKey
-// 	if request.Method != "" {
-// 		args["method"] = request.Method
-// 	}
-// 	if request.Signature != "" {
-// 		args["api_sig"] = request.Signature
-// 	}
-// 	return endpoint + encodeQuery(args)
-// }
 
 func (request *Request) getURL(url_base string) string {
 	args := request.getArgsPlusN(3)
@@ -209,24 +156,6 @@ func (request *Request) doGet(earl string) (response []byte, ret error) {
 
 
 
-// func (request *Request) Execute() (response []byte, ret error) {
-// 	if request.ApiKey == "" || request.Method == "" {
-// 		return []byte(nil), Error("Need both API key and method")
-// 	}
-
-// 	request.Signature = request.GetSig()
-	
-// 	s := request.URL()
-
-// 	res, err := http.Get(s)
-// 	defer res.Body.Close()
-// 	if err != nil {
-// 		return []byte(nil), err
-// 	}
-
-// 	body, _ := ioutil.ReadAll(res.Body)
-// 	return body, nil
-// }
 
 func encodeQuery(args map[string]string) string {
 	i := 0
