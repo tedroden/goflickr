@@ -39,8 +39,8 @@ type AuthUser struct {
 	Username string `xml:"username,attr"`
 }
 type Auth struct {
-	Token string `xml:"auth>token"`
-	User AuthUser `xml:"auth>user"`
+	Token string `xml:"token"`
+	User AuthUser `xml:"user"`
 }
 
 type Photoset struct {
@@ -54,7 +54,7 @@ type UploadPhoto struct {
 type Response struct {
 	Status  string         `xml:"stat,attr"`
 	Error   *ResponseError `xml:"err"`
-	Payload string         `xml:",innerxml"`
+	Payload []byte         `xml:",innerxml"`
 }
 
 type ResponseError struct {
@@ -63,9 +63,8 @@ type ResponseError struct {
 }
 
 type Frob struct {
-	Payload string `xml:"frob"`
+	Payload string `xml:",innerxml"`
 }
-
 
 type nopCloser struct {
 	io.Reader
@@ -95,11 +94,31 @@ func (request *Request) PhotosetCreate(title string, photo_id string) Photoset {
 	return upload	
 }
 
-func (request *Request) GetFrob() Frob {
+func (request *Request) PhotosetAddPhoto(set Photoset, photo_id string) bool {
+	request.Method = "flickr.photosets.addPhoto"
+	request.args = map[string]string{
+		"photoset_id": set.Id,
+		"photo_id": photo_id,
+	}
+	s, _ := request.doPost(endpoint)
+	var resp Response
+	err := xml.Unmarshal(*s, &resp)
+	if err != nil {
+		fmt.Printf("ERROR! %s\n", err)
+	}
+	fmt.Println(resp)
+	return true
+}
+
+func (request *Request) FrobGet() Frob {
 	request.Method = "flickr.auth.getFrob"
 	s, _ := request.doGet(endpoint)
 	var f Frob
-	xml.Unmarshal(s, &f)
+	fmt.Println("Next two are frob:")
+	fmt.Println(string(*s))
+	xml.Unmarshal(*s, &f)
+	fmt.Println(f)
+	fmt.Println("LEaving frobget")
 	return f
 }
 
@@ -109,8 +128,9 @@ func (request *Request) GetToken(frob Frob) Auth {
 		"frob": frob.Payload,
 	}
 	s, _ := request.doGet(endpoint)
+	fmt.Println(string(*s))
 	var a Auth
-	xml.Unmarshal(s, &a)
+	xml.Unmarshal(*s, &a)
 	return a
 }
 
@@ -137,7 +157,6 @@ func (request *Request) GetSig() string {
 			s += fmt.Sprintf("%s%s", key, args[key])
 		}
 	}
-	fmt.Println(s)
 	// Have the full string, now hash
 	hash := md5.New()
 	hash.Write([]byte(s))	
@@ -162,9 +181,9 @@ func (request *Request) getURL(url_base string) string {
 
 
 
-func (request *Request) doGet(earl string) (response []byte, ret error) {
+func (request *Request) doGet(earl string) (response *[]byte, ret error) {
 	if request.ApiKey == "" || request.Method == "" {
-		return []byte(nil), Error("Need both API key and method")
+		return nil, Error("Need both API key and method")
 	}
 
 	request.Signature = request.GetSig()
@@ -174,18 +193,20 @@ func (request *Request) doGet(earl string) (response []byte, ret error) {
 	res, err := http.Get(s)
 	defer res.Body.Close()
 	if err != nil {
-		return []byte(nil), err
+		return nil, err
 	}
 	request.Signature = ""
 	request.Method = ""	
 	body, _ := ioutil.ReadAll(res.Body)
-	return body, nil
+	
+	var r Response
+	xml.Unmarshal(body, &r)
+	return &r.Payload, nil
+	// return body, nil
 }
 
 
 func (request *Request) doPost(url_ string) (response *[]byte, err error) {
-
-	
 	request.args["api_key"] = request.ApiKey
 	request.args["method"] = request.Method
 	request.args["auth_token"] = request.AuthToken
@@ -203,8 +224,10 @@ func (request *Request) doPost(url_ string) (response *[]byte, err error) {
 	defer resp.Body.Close()
 	
 	response_body, err := ioutil.ReadAll(resp.Body)
-	fmt.Println(string(response_body))
-	return &response_body, err
+
+	var r Response
+	xml.Unmarshal(response_body, &r)
+	return &r.Payload, err
 
 }
 
@@ -294,7 +317,6 @@ func (request *Request) Upload(filename string, filetype string) (*UploadPhoto, 
 	request.args["is_friend"] = "0"
 	request.args["auth_token"] = request.AuthToken
 	request.args["api_sig"] = request.GetSig()
-	
 
 	postRequest, err := request.buildPost(uploadEndpoint, filename, filetype)
 	if err != nil {
@@ -306,6 +328,8 @@ func (request *Request) Upload(filename string, filetype string) (*UploadPhoto, 
 
 	var upload UploadPhoto
 	err = xml.Unmarshal(*bytes, &upload)
+	// fmt.Println("Uploaded.")
+	// fmt.Println(string(*bytes))
 	return &upload, err
 	
 }
@@ -337,6 +361,8 @@ func sendPost(postRequest *http.Request) (response *[]byte, err error) {
 	}
 	rawBody, err := ioutil.ReadAll(resp.Body)
 	resp.Body.Close()
+	// this should be parsed to response.
+	fmt.Println(string(rawBody))
 	return &rawBody, err
 }
 
